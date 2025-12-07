@@ -16,7 +16,8 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev dwarves
 
       - name: Clone Linux kernel (test)
         run: |
