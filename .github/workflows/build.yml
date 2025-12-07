@@ -17,9 +17,24 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev libelf-dev dwarves
+            build-essential bc bison flex libssl-dev libelf-dev dwarves ccache
 
-      - name: Clone Linux kernel (test)
+      - name: Setup ccache
+        run: |
+          echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
+
+      - name: Restore ccache cache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/ccache
+          key: kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            kernel-ccache-
+            
+      - name: Show ccache stats
+        run: ccache -s
+
+      - name: Clone Linux kernel
         run: |
           git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
 
