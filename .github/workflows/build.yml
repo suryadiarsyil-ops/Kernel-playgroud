@@ -10,27 +10,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # 1. Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone Linux kernel
+      # 2. Clone kernel source (auto)
+      - name: Clone kernel
         run: |
-          git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
+          if [ ! -d linux-src ]; then
+            git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
+          fi
 
+      # 3. Install deps
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev dwarves ccache
 
+      # 4. Setup ccache
       - name: Setup ccache
         run: |
           echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
-      - name: Ensure ccache directory exists
-        run: mkdir -p /home/runner/.cache/ccache
-        
-      - name: Restore ccache cache
+      # 5. Restore ccache
+      - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
@@ -38,40 +43,88 @@ jobs:
           restore-keys: |
             kernel-ccache-
 
-      - name: Show ccache stats
+      # 6. Show ccache stats
+      - name: ccache stats
         run: ccache -s
 
-      - name: Kernel config summary
+      # 7. Auto detect env  (# auto-env.sh)
+      - name: Auto detect
         working-directory: linux-src
         run: |
-          make savedefconfig
-          cat defconfig
+          echo "ARCH=$(uname -m)" > ../env.auto
+          if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            echo "CROSS_COMPILE=aarch64-linux-gnu-" >> ../env.auto
+          else
+            echo "CROSS_COMPILE=" >> ../env.auto
+          fi
 
+      # 8. Apply config + patches (digabung)
+      - name: Apply custom config & patches
+        working-directory: linux-src
+        run: |
+          source ../env.auto
+          if [ -f ../config ]; then
+            cp ../config .config
+          fi
+          yes "" | make oldconfig || make olddefconfig
+          if [ -d ../patches ]; then
+            for p in ../patches/*.patch; do
+              echo "[dry-run] $p"
+              if patch --dry-run -p1 < "$p"; then
+                patch -p1 < "$p"
+              else
+                patch -p1 --fuzz=3 < "$p" || true
+              fi
+            done
+          fi
+
+      # 9. Start time
       - name: Start time
         id: start
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
+      # 10. Build kernel auto (fallback threads)
       - name: Build kernel
         working-directory: linux-src
         run: |
-          make defconfig
-          make -j$(nproc)
+          THREADS=$(nproc)
+          make -j$THREADS || make -j$(($THREADS/2)) || make -j1
 
+      # 11. Build modules
+      - name: Build modules
+        working-directory: linux-src
+        run: |
+          source ../env.auto
+          make modules_install INSTALL_MOD_PATH=../modules-out
+
+      # 12. End time
       - name: End time + duration
         run: |
           end=$(date +%s)
           duration=$((end - time_start))
           echo "Build duration: $duration seconds"
 
-      - name: Upload build logs
+      # 13. Bundle output (# out/)
+      - name: Bundle output
+        working-directory: linux-src
+        run: |
+          mkdir -p ../out
+          cp arch/*/boot/Image* ../out/ 2>/dev/null || true
+          cp arch/*/boot/bzImage ../out/ 2>/dev/null || true
+          cp vmlinux ../out/ 2>/dev/null || true
+          echo "Build timestamp: $(date)" > ../out/BUILD_INFO
+
+      # 14. Upload logs
+      - name: Upload logs
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: linux-src/*.log
           if-no-files-found: ignore
 
-      - name: Upload kernel artifact
+      # 15. Upload artifacts
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: test-kernel
-          path: linux-src/arch/x86/boot/bzImage
+          name: kernel-output
+          path: out
