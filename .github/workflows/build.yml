@@ -13,6 +13,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Clone Linux kernel
+        run: |
+          git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
+
       - name: Install deps
         run: |
           sudo apt-get update
@@ -30,21 +34,40 @@ jobs:
           key: kernel-ccache-${{ github.sha }}
           restore-keys: |
             kernel-ccache-
-            
+
       - name: Show ccache stats
         run: ccache -s
 
-      - name: Clone Linux kernel
+      - name: Kernel config summary
+        working-directory: linux-src
         run: |
-          git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
+          make savedefconfig
+          cat defconfig
 
-      - name: Build test kernel
+      - name: Start time
+        id: start
+        run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Build kernel
         working-directory: linux-src
         run: |
           make defconfig
           make -j$(nproc)
 
-      - name: Upload artifact
+      - name: End time + duration
+        run: |
+          end=$(date +%s)
+          duration=$((end - time_start))
+          echo "Build duration: $duration seconds"
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: linux-src/*.log
+          if-no-files-found: ignore
+
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: test-kernel
