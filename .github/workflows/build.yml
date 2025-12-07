@@ -27,6 +27,9 @@ jobs:
         run: |
           echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
+      - name: Ensure ccache directory exists
+        run: mkdir -p /home/runner/.cache/ccache
+        
       - name: Restore ccache cache
         uses: actions/cache@v4
         with:
