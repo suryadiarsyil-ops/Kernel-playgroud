@@ -10,32 +10,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # 1. Checkout
+      # 1. Checkout repo
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Clone kernel source (auto)
-      - name: Clone kernel
-        run: |
-          if [ ! -d linux-src ]; then
-            git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git --depth=1 linux-src
-          fi
-
-      # 3. Install deps
+      # 2. Install dependencies
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev dwarves ccache
 
-      # 4. Setup ccache
+      # 3. Setup ccache
       - name: Setup ccache
+      # bukan working-directory 
         run: |
           echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
-      # 5. Restore ccache
-      - name: Restore ccache
+      # 4. Restore ccache
+      - name: Restore ccache cache
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
@@ -43,88 +36,97 @@ jobs:
           restore-keys: |
             kernel-ccache-
 
-      # 6. Show ccache stats
-      - name: ccache stats
+      # 5. Show initial ccache stats
+      - name: Show ccache stats
         run: ccache -s
 
-      # 7. Auto detect env  (# auto-env.sh)
-      - name: Auto detect
+      # 6. Clone kernel 6.6 LTS
+      - name: Clone Linux kernel (6.6 LTS)
+        run: |
+          git clone --depth=1 --branch linux-6.6.y \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
+
+      # 7. Apply custom kernel-config (optional)
+      - name: Apply custom kernel config
         working-directory: linux-src
         run: |
-          echo "ARCH=$(uname -m)" > ../env.auto
-          if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
-            echo "CROSS_COMPILE=aarch64-linux-gnu-" >> ../env.auto
+          if [ -f ../kernel-config ]; then
+            echo "[*] using kernel-config"
+            cp ../kernel-config .config
+            yes "" | make oldconfig
           else
-            echo "CROSS_COMPILE=" >> ../env.auto
+            echo "[*] no custom kernel-config found"
+            make defconfig
           fi
 
-      # 8. Apply config + patches (digabung)
-      - name: Apply custom config & patches
+      # 8. Inline config tweaks
+      - name: Inline config tweaks
         working-directory: linux-src
         run: |
-          source ../env.auto
-          if [ -f ../config ]; then
-            cp ../config .config
-          fi
-          yes "" | make oldconfig || make olddefconfig
+          scripts/config --enable CONFIG_BPF
+          scripts/config --set-val CONFIG_HZ 1000
+          make olddefconfig
+
+      # 9. AUTO FIX: Disable trusted certificate keys (no more certs error)
+      - name: Disable kernel trusted key requirements
+        working-directory: linux-src
+        run: |
+          scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYS
+          scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
+          scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+          scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
+          make olddefconfig
+
+      # 10. Apply custom patches (optional)
+      - name: Apply custom patches
+        working-directory: linux-src
+        run: |
           if [ -d ../patches ]; then
+            echo "[*] applying patches..."
             for p in ../patches/*.patch; do
-              echo "[dry-run] $p"
-              if patch --dry-run -p1 < "$p"; then
-                patch -p1 < "$p"
-              else
-                patch -p1 --fuzz=3 < "$p" || true
-              fi
+              echo "patch: $p"
+              git apply "$p"
             done
+          else
+            echo "[*] no patches found"
           fi
 
-      # 9. Start time
+      # 11. Print final config
+      - name: Kernel config summary
+        working-directory: linux-src
+        run: |
+          make savedefconfig
+          cat defconfig
+
+      # 12. Record start time
       - name: Start time
         id: start
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-      # 10. Build kernel auto (fallback threads)
+      # 13. Build kernel
       - name: Build kernel
         working-directory: linux-src
         run: |
-          THREADS=$(nproc)
-          make -j$THREADS || make -j$(($THREADS/2)) || make -j1
+          make -j$(nproc)
 
-      # 11. Build modules
-      - name: Build modules
-        working-directory: linux-src
-        run: |
-          source ../env.auto
-          make modules_install INSTALL_MOD_PATH=../modules-out
-
-      # 12. End time
+      # 14. Measure build duration
       - name: End time + duration
         run: |
           end=$(date +%s)
           duration=$((end - time_start))
           echo "Build duration: $duration seconds"
 
-      # 13. Bundle output (# out/)
-      - name: Bundle output
-        working-directory: linux-src
-        run: |
-          mkdir -p ../out
-          cp arch/*/boot/Image* ../out/ 2>/dev/null || true
-          cp arch/*/boot/bzImage ../out/ 2>/dev/null || true
-          cp vmlinux ../out/ 2>/dev/null || true
-          echo "Build timestamp: $(date)" > ../out/BUILD_INFO
-
-      # 14. Upload logs
-      - name: Upload logs
+      # 15. Upload logs
+      - name: Upload build logs
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: linux-src/*.log
           if-no-files-found: ignore
 
-      # 15. Upload artifacts
-      - name: Upload kernel
+      # 16. Upload built kernel image
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-output
-          path: out
+          name: kernel-image
+          path: linux-src/arch/x86/boot/bzImage
