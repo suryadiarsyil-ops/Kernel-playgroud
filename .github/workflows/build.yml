@@ -1,9 +1,14 @@
-name: Kernel Playground Build
-
+name: 📱 Kernel Playground Build (ARM64)
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+
+env:
+  # 1. Tentukan Arsitektur Target
+  ARCH: arm64
+  # 2. Tentukan Toolchain Prefix (Ganti jika pakai toolchain lain)
+  CROSS_COMPILE: aarch64-linux-gnu-
 
 jobs:
   build:
@@ -11,29 +16,32 @@ jobs:
 
     steps:
       # 1. Checkout repo
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
-      - name: Install deps
+      # 2. Install Dependencies + Toolchain Wajib (Cross-Compilation)
+      - name: Install Build Dependencies and ARM64 Toolchain
         run: |
           sudo apt-get update
+          # Dependensi standar kernel build
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl
+          # Tambahan: Toolchain untuk cross-compile ke AArch64 (ARM64)
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      # 3. Setup ccache
-      - name: Setup ccache
-        run: |
-          echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
+      # 3. Setup ccache Path
+      - name: Setup ccache PATH
+        run: echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
-      # 4. Restore ccache
-      - name: Restore ccache cache
+      # 4. Restore ccache (Key diperbaiki biar lebih akurat)
+      - name: Restore ccache Cache
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
-          key: kernel-ccache-${{ github.sha }}
+          # Key cache berdasarkan ARCH dan config file (lebih spesifik)
+          key: kernel-ccache-${{ env.ARCH }}-${{ hashFiles('linux-src/.config') }}-${{ github.sha }}
           restore-keys: |
-            kernel-ccache-
+            kernel-ccache-${{ env.ARCH }}-
 
       # 5. Show initial ccache stats
       - name: Show ccache stats
@@ -45,29 +53,35 @@ jobs:
           git clone --depth=1 --branch linux-6.6.y \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
 
-      # 7. Apply custom kernel-config (optional)
-      - name: Apply custom kernel config
+      # 7. Apply custom kernel-config atau defconfig
+      - name: Apply Custom Kernel Config
         working-directory: linux-src
         run: |
           if [ -f ../kernel-config ]; then
-            echo "[*] using kernel-config"
+            echo "[*] Using custom kernel-config"
             cp ../kernel-config .config
-            yes "" | make oldconfig
+            # oldconfig buat adopsi .config baru dengan defconfig sisa
+            yes "" | make ${ARCH}_defconfig oldconfig 
           else
-            echo "[*] no custom kernel-config found"
-            make defconfig
+            echo "[*] No custom kernel-config found. Using default config for ${ARCH}."
+            # Set default config untuk ARM64
+            make ${ARCH}_defconfig
           fi
 
-      # 8. Inline config tweaks
-      - name: Inline config tweaks
+      # 8. Inline config tweaks (Disarankan cek lagi nilai HZ untuk baterai)
+      - name: Inline Config Tweaks
         working-directory: linux-src
         run: |
           scripts/config --enable CONFIG_BPF
-          scripts/config --set-val CONFIG_HZ 1000
+          # Ganti HZ ke 250 (Bagus buat trade-off Baterai/Responsif)
+          scripts/config --set-val CONFIG_HZ 250 
+          # Enable fitur wajib: OverlayFS (buat Termux/Linux modern)
+          scripts/config --enable CONFIG_OVERLAY_FS
+          # Konfig lain yang mungkin perlu diaktifkan di sini
           make olddefconfig
 
-      # 9. SIGNING MODE — generate x509 key and inject
-      - name: Generate signing keys
+      # 9. SIGNING MODE — generate x509 key and inject (Opsional, hapus kalau gak perlu)
+      - name: Generate Signing Keys
         working-directory: linux-src
         run: |
           mkdir -p certs
@@ -75,63 +89,70 @@ jobs:
             -subj "/CN=KernelAutoKey/" \
             -newkey rsa:2048 -keyout certs/signing_key.pem \
             -x509 -out certs/signing_key.x509.pem -days 3650
-
           scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS "certs/signing_key.x509.pem"
           scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
           make olddefconfig
 
       # 10. Apply custom patches (optional)
-      - name: Apply custom patches
+      - name: Apply Custom Patches
         working-directory: linux-src
         run: |
           if [ -d ../patches ]; then
             for p in ../patches/*.patch; do
               echo "patch: $p"
+              # Gunakan git am kalau patch berformat commit atau git apply
               git apply "$p"
             done
           else
-            echo "[*] no patches found"
+            echo "[*] No patches found"
           fi
-
+          
       # 11. Print final config
-      - name: Kernel config summary
+      - name: Kernel Config Summary
         working-directory: linux-src
         run: |
           make savedefconfig
           cat defconfig
 
       # 12. Record start time
-      - name: Start time
+      - name: Record Start Time
         id: start
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-      # 13. Build kernel (auto signed modules)
-      - name: Build kernel
+      # 13. Build kernel Image + Modules
+      - name: Build Kernel (Target Image.gz untuk ARM64)
         working-directory: linux-src
         run: |
-          make -j$(nproc)
+          # Build Image.gz (umumnya dipakai buat booting)
+          make -j$(nproc) Image.gz modules 
 
       # 14. Measure build duration
-      - name: End time + duration
+      - name: Calculate Build Duration
         run: |
           end=$(date +%s)
           duration=$((end - time_start))
           echo "Build duration: $duration seconds"
+          echo "## Build Duration: $duration seconds" >> $GITHUB_STEP_SUMMARY
 
       # 15. Upload logs
-      - name: Upload build logs
+      - name: Upload Build Logs
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: linux-src/*.log
           if-no-files-found: ignore
 
-      # 16. Upload built kernel image + signing keys
-      - name: Upload artifact
+      # 16. Upload built kernel image + signing keys + modules
+      - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-signed-output
+          name: kernel-arm64-output
           path: |
-            linux-src/arch/x86/boot/bzImage
+            # Path Image ARM64
+            linux-src/arch/arm64/boot/Image.gz
+            # Path Modules (Penting buat driver tambahan)
+            linux-src/modules.builtin.modinfo
+            linux-src/System.map
+            # Signing Keys (Kalau langkah 9 dipakai)
             linux-src/certs/signing_key.pem
             linux-src/certs/signing_key.x509.pem
