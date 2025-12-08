@@ -65,7 +65,7 @@ jobs:
           else
             echo "[*] No custom kernel-config found. Using default config for ${ARCH}."
             # Set default config untuk ARM64
-            make ${ARCH}_defconfig
+            make defconfig
           fi
 
       # 8. Inline config tweaks (Disarankan cek lagi nilai HZ untuk baterai)
