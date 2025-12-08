@@ -29,9 +29,13 @@ jobs:
           # Tambahan: Toolchain untuk cross-compile ke AArch64 (ARM64)
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      # 3. Setup ccache Path
-      - name: Setup ccache PATH
-        run: echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
+      # 3. Setup ccache
+      - name: Setup ccache
+        run: |
+          # Buat foldernya secara manual biar Actions gak komplain pas cleanup
+          mkdir -p /home/runner/.cache/ccache
+          echo "CCACHE_DIR=/home/runner/.cache/ccache" >> $GITHUB_ENV
+          echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
       # 4. Restore ccache (Key diperbaiki biar lebih akurat)
       - name: Restore ccache Cache
@@ -119,12 +123,11 @@ jobs:
         id: start
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-      # 13. Build kernel Image + Modules
-      - name: Build Kernel (Target Image.gz untuk ARM64)
+      # 13. Build kernel
+      - name: Build kernel
         working-directory: linux-src
         run: |
-          # Build Image.gz (umumnya dipakai buat booting)
-          make -j$(nproc) Image.gz modules 
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-gnu-" Image.gz modules 
 
       # 14. Measure build duration
       - name: Calculate Build Duration
