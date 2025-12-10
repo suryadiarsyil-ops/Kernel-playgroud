@@ -123,39 +123,69 @@ jobs:
         id: start
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-      # 13. Build kernel
-      - name: Build kernel
+      # 13. Build kernel Image + Modules
+      - name: Build Kernel (Target Image.gz untuk ARM64)
         working-directory: linux-src
         run: |
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-gnu-" Image.gz modules 
+          make -j$(nproc) Image.gz modules
 
-      # 14. Measure build duration
-      - name: Calculate Build Duration
+      # 14. 🛠️ Instalasi QEMU dan Dependensi Initramfs
+      - name: Install QEMU and Initramfs Tools
         run: |
-          end=$(date +%s)
-          duration=$((end - time_start))
-          echo "Build duration: $duration seconds"
-          echo "## Build Duration: $duration seconds" >> $GITHUB_STEP_SUMMARY
+          # Instal QEMU System (untuk emulasi ARM64)
+          sudo apt-get install -y qemu-system-aarch64
+          # Instal BusyBox dan CPIO (untuk Ramdisk)
+          sudo apt-get install -y busybox cpio
+          
+      # 15. 📁 Buat Initramfs (Ramdisk Minimal)
+      - name: Create Minimal BusyBox Initramfs
+        run: |
+          mkdir -p initramfs/bin initramfs/dev initramfs/etc initramfs/lib initramfs/proc initramfs/sys initramfs/tmp
+          
+          # Salin BusyBox. Kita pakai yang dari repo apt (binary statis yang aman)
+          cp /bin/busybox initramfs/bin/
+          
+          # Buat init script
+          echo "#!/bin/sh" > initramfs/init
+          echo "mount -t proc none /proc" >> initramfs/init
+          echo "mount -t sysfs none /sys" >> initramfs/init
+          echo "echo '*** Custom Kernel Boot Success! ***'" >> initramfs/init
+          echo "/bin/busybox sh" >> initramfs/init
+          chmod +x initramfs/init
+          
+          # Buat device nodes kritis (WAJIB: console dan null)
+          # Menggunakan sudo karena ini memerlukan elevated privileges di runner
+          sudo mknod initramfs/dev/console c 5 1
+          sudo mknod initramfs/dev/null c 1 3
+          
+          # Archive Ramdisk ke format CPIO
+          cd initramfs
+          find . -print0 \
+              | cpio --null -o --format=newc > ../initrd.img
+          cd ..
 
-      # 15. Upload logs
-      - name: Upload Build Logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: linux-src/*.log
-          if-no-files-found: ignore
+      # 16. 🚀 QEMU TEST: Booting Penuh ke Shell
+      # WARNING: Gunakan 'timeout' agar QEMU tidak berjalan selamanya jika ada hang
+      - name: Run QEMU Test (Full Boot to Shell)
+        working-directory: linux-src
+        run: |
+          # Pindah Image.gz dan initrd.img ke working directory biar mudah diakses
+          cp arch/arm64/boot/Image.gz .
+          cp ../initrd.img .
+          
+          echo "[*] Starting QEMU Boot Test..."
+          
+          # Gunakan 'timeout' untuk membatasi waktu boot (misal 60 detik)
+          timeout 60s qemu-system-aarch64 \
+              -M virt \
+              -cpu cortex-a57 \
+              -m 512M \
+              -kernel Image.gz \
+              -initrd initrd.img \
+              -nographic \
+              -append "console=ttyAMA0 root=/dev/ram0 rw earlyprintk"
+          
+          echo "[*] QEMU Test Complete. Check logs above for BusyBox shell."
 
-      # 16. Upload built kernel image + signing keys + modules
-      - name: Upload Final Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-arm64-output
-          path: |
-            # Path Image ARM64
-            linux-src/arch/arm64/boot/Image.gz
-            # Path Modules (Penting buat driver tambahan)
-            linux-src/modules.builtin.modinfo
-            linux-src/System.map
-            # Signing Keys (Kalau langkah 9 dipakai)
-            linux-src/certs/signing_key.pem
-            linux-src/certs/signing_key.x509.pem
+      # 17. Measure build duration (Nomor langkah disesuaikan)
+      
