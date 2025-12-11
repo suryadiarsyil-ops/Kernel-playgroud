@@ -6,7 +6,6 @@ on:
 
 env:
   ARCH: arm64
-  # CROSS_COMPILE akan di-set di langkah 2
   CROSS_COMPILE_PREFIX: aarch64-linux-gnu-
 
 jobs:
@@ -18,7 +17,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. FIX KRITIS: Setup Linaro Toolchain (Mengatasi Linker Statis Gagal)
+      # 2. FIX KRITIS: Setup Linaro Toolchain
       - name: Setup Linaro ARM64 Toolchain and Dependencies
         run: |
           # 2A. Download dan Ekstrak Linaro Toolchain
@@ -29,14 +28,15 @@ jobs:
           # 2B. Set PATH & CROSS_COMPILE
           TOOLCHAIN_PATH=$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin
           echo "$TOOLCHAIN_PATH" >> $GITHUB_PATH
-          echo "CROSS_COMPILE=$TOOLCHAIN_PATH/$CROSS_COMPILE_PREFIX" >> $GITHUB_ENV # Set variabel baru
+          # Masukkan ke ENV agar bisa dipanggil sebagai $CROSS_COMPILE nanti
+          echo "CROSS_COMPILE=$TOOLCHAIN_PATH/$CROSS_COMPILE_PREFIX" >> $GITHUB_ENV 
           
           # 2C. Instal sisa dependencies
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl \
             qemu-system-aarch64 cpio libncurses5-dev 
           
-      # 3. Setup ccache Path & Directory Fix
+      # 3. Setup ccache Path
       - name: Setup ccache PATH & Directory Fix
         run: |
           mkdir -p /home/runner/.cache/ccache
@@ -58,7 +58,7 @@ jobs:
           git clone --depth=1 --branch linux-6.6.y \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
 
-      # 6. Apply defconfig (FIXED)
+      # 6. Apply defconfig
       - name: Apply Default ARM64 Config
         working-directory: linux-src
         run: |
@@ -66,7 +66,6 @@ jobs:
             cp ../kernel-config .config
             yes "" | make defconfig oldconfig 
           else
-            # Gunakan make defconfig (otomatis ke arch/arm64/configs/defconfig)
             make defconfig
           fi
 
@@ -80,16 +79,15 @@ jobs:
           make olddefconfig
 
       # 8. Build kernel Image + Modules
-      - name: Build Kernel (Target: Image.gz untuk ARM64)
+      - name: Build Kernel (Target Image.gz untuk ARM64)
         working-directory: linux-src
         run: |
-          # Gunakan ccache dan Toolchain Linaro
-          make -j$(nproc) CROSS_COMPILE="ccache ${{ env.CROSS_COMPILE }}" Image.gz modules 
+          # Perbaikan: Menggunakan $CROSS_COMPILE (Bash Variable) bukan ${{ env... }}
+          make -j$(nproc) CROSS_COMPILE="ccache $CROSS_COMPILE" Image.gz modules 
 
-      # 9. 📦 Cross-Compile BusyBox (ARM64 Statis) - FIX Linker & Architecture
+      # 9. 📦 Cross-Compile BusyBox (ARM64 Statis)
       - name: Cross-Compile BusyBox for ARM64
         run: |
-          # Download Source Code BusyBox
           wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
           tar -xf busybox-1.36.1.tar.bz2
           
@@ -98,13 +96,11 @@ jobs:
           make defconfig
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           
-          # FIX Linker Error: Paksa Static Linkage
           export LDFLAGS='-static'
           
-          # Build BusyBox menggunakan Toolchain Linaro (yang sudah ada di PATH)
-          make ARCH=arm64 CROSS_COMPILE=${{ env.CROSS_COMPILE }} -j$(nproc)
+          # Perbaikan: Menggunakan $CROSS_COMPILE (Bash Variable)
+          make ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
           
-          # Simpan binary ARM64 yang sudah jadi
           cp busybox ../busybox-arm64
           cd ..
           
@@ -131,7 +127,7 @@ jobs:
               | cpio --null -o --format=newc > ../initrd.img
           cd ..
 
-      # 11. 🚀 QEMU TEST: Booting Penuh ke Shell (PoC Validation)
+      # 11. 🚀 QEMU TEST: Booting Penuh ke Shell
       - name: Run QEMU Test (Validate Boot)
         working-directory: linux-src
         run: |
@@ -140,7 +136,6 @@ jobs:
           
           echo "[*] Starting QEMU Test..."
           
-          # Timeout 60s untuk mencegah hang
           timeout 60s qemu-system-aarch64 \
               -M virt \
               -cpu cortex-a57 \
@@ -159,5 +154,4 @@ jobs:
           name: kernel-arm64-bootable
           path: |
             linux-src/arch/arm64/boot/Image.gz
-            initrd.img 
-            # ... (artifact lain yang relevan) ...
+            initrd.img
