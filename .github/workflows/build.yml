@@ -49,12 +49,22 @@ jobs:
           restore-keys: |
             kernel-ccache-${{ env.ARCH }}-
 
-      # 5. Clone kernel (FINAL FIX: Kembali ke common repo, pakai branch LTS)
-      - name: Clone Android Common Kernel (5.10)
+      # 5. Clone kernel (Kembali ke common repo, pakai branch LTS)
+      - name: Auto-detect valid 5.10 branch
         run: |
-          echo "[*] Cloning Android Common Kernel (5.10) using LTS branch."
-          # Branch 5.10 LTS yang paling stabil dan di-maintain
-          git clone --depth=1 --branch android-5.10-lts \
+          echo "[*] Fetching branches..."
+          git ls-remote --heads https://android.googlesource.com/kernel/common | grep 5.10
+
+          BRANCH=$(git ls-remote --heads https://android.googlesource.com/kernel/common \
+            | grep 5.10 \
+            | grep -E 'lts|14|13' \
+            | head -n1 \
+            | awk '{print $2}' \
+            | sed 's/refs\/heads\///')
+
+          echo "[*] Selected branch: $BRANCH"
+
+          git clone --depth=1 --branch $BRANCH \
             https://android.googlesource.com/kernel/common linux-src
 
       # 6. Apply defconfig (REVISI: Menggunakan config GKI/ACK)
