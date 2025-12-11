@@ -138,19 +138,18 @@ jobs:
       # 15. 📦 Cross-Compile BusyBox (ARM64 Statis)
       - name: Cross-Compile BusyBox for ARM64
         run: |
-          # Perbaikan: Download file tarball, bukan clone repo
-          wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          # Extract file yang sudah di-download
-          tar -xf busybox-1.36.1.tar.bz2
+          # ... (Download dan extract source code) ...
           cd busybox-1.36.1
           
           # Konfigurasi: Default config, pastikan static build
           make defconfig
-          
-          # Edit .config untuk memaksa build statis
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           
+          # Tambahkan -static ke LDFLAGS dan pastikan toolchain path sudah benar
+          export LDFLAGS='-static'
+          
           # Build BusyBox menggunakan Cross-Compile Toolchain
+          # NOTE: Kita harus memastikan PATH toolchain (aarch64-linux-gnu-) sudah di-set
           make ARCH=arm64 CROSS_COMPILE=${{ env.CROSS_COMPILE }} -j$(nproc)
           
           # Simpan binary statis yang sudah jadi
