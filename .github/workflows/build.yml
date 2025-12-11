@@ -1,4 +1,4 @@
-name: 🟢 FINAL - Kernel ARM64 Build & QEMU Test
+name: FINAL - Kernel ARM64 Build & QEMU Test
 on:
   workflow_dispatch:
   push:
@@ -66,13 +66,37 @@ jobs:
             make defconfig
           fi
 
-      # 7. Inline config tweaks
-      - name: Inline Config Tweaks
+      # 7. Inline Config Tweaks (REVISI: Optimasi Kinerja dan Debugging)
+      - name: Inject Custom Performance Tweaks & Debugging
         working-directory: linux-src
         run: |
-          scripts/config --enable CONFIG_BPF
-          scripts/config --set-val CONFIG_HZ 250 
-          scripts/config --enable CONFIG_OVERLAY_FS
+          echo "[*] Injecting Performance Tweaks (Scheduler, I/O, Debug)"
+
+          # --- 1. SCHEDULER & GOVERNOR OPTIMASI (Wajib) ---
+          scripts/config --disable CONFIG_SCHED_SMT
+          scripts/config --enable CONFIG_SCHED_AUTOGROUP
+          
+          # Aktifkan Schedulers Alternatif
+          scripts/config --enable CONFIG_CFS_BANDWIDTH
+          scripts/config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL # Governor modern
+          scripts/config --enable CONFIG_CGROUPS
+          
+          # --- 2. I/O SCHEDULER (Mengganti CFQ/Deadline) ---
+          # Aktifkan BFQ (Terbaik untuk I/O di Mobile)
+          scripts/config --enable CONFIG_BLK_DEV_BFQ 
+          scripts/config --set-val CONFIG_DEFAULT_IOSCHED "bfq"
+          
+          # --- 3. DEBUGGING & TRACING LANJUTAN (Wajib untuk Modding) ---
+          # pstore/LAST_KMSG (Simpan log kernel setelah crash)
+          scripts/config --enable CONFIG_PSTORE 
+          scripts/config --enable CONFIG_PSTORE_RAM 
+          # KEXEC (Soft Reboot / Crash Dump)
+          scripts/config --enable CONFIG_KEXEC
+          scripts/config --enable CONFIG_KEXEC_CORE
+          
+          # Optimasi: Compress LZO (Cepat tapi kurang efisien)
+          scripts/config --enable CONFIG_RD_LZMA
+          
           make olddefconfig
 
       # 8. Build kernel Image + Modules
