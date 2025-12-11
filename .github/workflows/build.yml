@@ -1,4 +1,4 @@
-name: 🟢 FINAL - Kernel ARM64 Build & QEMU Test (Functional)
+name: 🟢 FINAL - Kernel ARM64 Build & QEMU Test
 on:
   workflow_dispatch:
   push:
@@ -17,21 +17,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. FIX KRITIS: Setup Linaro Toolchain
+      # 2. Setup Linaro Toolchain
       - name: Setup Linaro ARM64 Toolchain and Dependencies
         run: |
-          # 2A. Download dan Ekstrak Linaro Toolchain
           echo "[*] Installing Linaro Toolchain for stable static linking..."
           wget -q https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
           tar xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
           
-          # 2B. Set PATH & CROSS_COMPILE
           TOOLCHAIN_PATH=$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin
           echo "$TOOLCHAIN_PATH" >> $GITHUB_PATH
-          # Masukkan ke ENV agar bisa dipanggil sebagai $CROSS_COMPILE nanti
+          # Set variable lingkungan untuk langkah selanjutnya
           echo "CROSS_COMPILE=$TOOLCHAIN_PATH/$CROSS_COMPILE_PREFIX" >> $GITHUB_ENV 
           
-          # 2C. Instal sisa dependencies
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl \
             qemu-system-aarch64 cpio libncurses5-dev 
@@ -82,10 +79,10 @@ jobs:
       - name: Build Kernel (Target Image.gz untuk ARM64)
         working-directory: linux-src
         run: |
-          # Perbaikan: Menggunakan $CROSS_COMPILE (Bash Variable) bukan ${{ env... }}
+          # Menggunakan variable bash CROSS_COMPILE secara langsung
           make -j$(nproc) CROSS_COMPILE="ccache $CROSS_COMPILE" Image.gz modules 
 
-      # 9. 📦 Cross-Compile BusyBox (ARM64 Statis)
+      # 9. Cross-Compile BusyBox (ARM64 Statis)
       - name: Cross-Compile BusyBox for ARM64
         run: |
           wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
@@ -98,13 +95,13 @@ jobs:
           
           export LDFLAGS='-static'
           
-          # Perbaikan: Menggunakan $CROSS_COMPILE (Bash Variable)
+          # Menggunakan variable bash CROSS_COMPILE secara langsung
           make ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
           
           cp busybox ../busybox-arm64
           cd ..
           
-      # 10. 📁 Buat Initramfs dengan Binary ARM64
+      # 10. Buat Initramfs dengan Binary ARM64
       - name: Create Minimal BusyBox Initramfs
         run: |
           mkdir -p initramfs/bin initramfs/dev initramfs/etc initramfs/lib initramfs/proc initramfs/sys initramfs/tmp
@@ -127,7 +124,7 @@ jobs:
               | cpio --null -o --format=newc > ../initrd.img
           cd ..
 
-      # 11. 🚀 QEMU TEST: Booting Penuh ke Shell
+      # 11. Run QEMU Test
       - name: Run QEMU Test (Validate Boot)
         working-directory: linux-src
         run: |
@@ -145,9 +142,9 @@ jobs:
               -nographic \
               -append "console=ttyAMA0 root=/dev/ram0 rw earlyprintk"
           
-          echo "[*] QEMU Test Complete. Search log for 'BOOT SUCCESS'."
+          echo "[*] QEMU Test Complete. Search log for BOOT SUCCESS."
 
-      # 12. Upload Final Artifacts
+      # 12. Upload Artifacts
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
