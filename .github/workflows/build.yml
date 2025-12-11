@@ -49,22 +49,19 @@ jobs:
           restore-keys: |
             kernel-ccache-${{ env.ARCH }}-
 
-      # 5. Clone kernel 6.6 LTS
-      - name: Clone Linux kernel (6.6 LTS)
+      # 5. Clone kernel (REVISI: Pindah ke Android Common Kernel 5.10)
+      - name: Clone Android Common Kernel (5.10)
         run: |
-          git clone --depth=1 --branch linux-6.6.y \
-            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
+          # Kernel 5.10 adalah salah satu versi yang paling umum digunakan di Android modern
+          git clone --depth=1 --branch android-5.10 \
+            https://android.googlesource.com/kernel/common linux-src
 
-      # 6. Apply defconfig
-      - name: Apply Default ARM64 Config
+      # 6. Apply defconfig (REVISI: Menggunakan config GKI/ACK)
+      - name: Apply GKI/ACK Default Config
         working-directory: linux-src
         run: |
-          if [ -f ../kernel-config ]; then
-            cp ../kernel-config .config
-            yes "" | make defconfig oldconfig 
-          else
-            make defconfig
-          fi
+          # Gunakan defconfig GKI (Generic Kernel Image) yang stabil
+          make gki_defconfig
 
       # 7. Inline Config Tweaks (REVISI: Optimasi Kinerja dan Debugging)
       - name: Inject Custom Performance Tweaks & Debugging
@@ -177,23 +174,28 @@ jobs:
           # Bersihkan file config/script yang tidak perlu dari AnyKernel3 (Optional)
           rm -rf AnyKernel3/ramdisk AnyKernel3/zImage AnyKernel3/*.zip
 
-        # 13. Inject Kernel Image and Modules into AnyKernel3
-      - name: Move Kernel and Modules
+      # 13. Inject Kernel Image, DTB, and Modules into AnyKernel3 (REVISI)
+      - name: Move Kernel, DTB and Modules
         run: |
-          # Salin Image.gz (wajib)
+          # Salin Image.gz
           cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # Salin Modules (wajib agar wifi/sensor jalan)
-          # Ini akan menyalin semua file .ko ke AnyKernel3/modules/system/lib/modules
-          find linux-src -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
+          # ### TEMPLATE KRITIS DTB/DTBO ###
+          # CATATAN: Path di bawah ini HANYA CONTOH.
+          # Lo harus ganti "device-dtb.img" dengan DTB spesifik device lo.
           
-          # Catatan: Untuk kernel Android spesifik, lo mungkin juga perlu menyalin DTB/DTBO
+          # Jika device menggunakan DTB terpisah:
           # cp linux-src/arch/arm64/boot/dts/vendor/device-dtb.img AnyKernel3/dtb
           
-          # Hapus file initrd.img (Hanya untuk QEMU, tidak perlu di flashable zip)
-          rm -f initrd.img  
-
-        # 14. Create Final Flashable ZIP
+          # Jika device menggunakan DTBO (Overlay):
+          # cp linux-src/arch/arm64/boot/dts/vendor/device-dtbo.img AnyKernel3/dtbo
+          
+          # Salin Modules
+          find linux-src -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
+          
+          rm -f initrd.img
+          
+      # 14. Create Final Flashable ZIP
       - name: Create Final Flashable ZIP
         run: |
           # Tambahkan script versi dan info build
