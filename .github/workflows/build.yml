@@ -1,48 +1,46 @@
-name: 📱 Kernel Playground Build (ARM64)
+name: 📱 Kernel ARM64 Build & QEMU Test (Proof of Concept)
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
 
 env:
-  # 1. Tentukan Arsitektur Target
+  # Konfigurasi Wajib: Target ARM64
   ARCH: arm64
-  # 2. Tentukan Toolchain Prefix (Ganti jika pakai toolchain lain)
   CROSS_COMPILE: aarch64-linux-gnu-
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    
     steps:
       # 1. Checkout repo
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Install Dependencies + Toolchain Wajib (Cross-Compilation)
-      - name: Install Build Dependencies and ARM64 Toolchain
+      # 2. Install Build Dependencies & Toolchain
+      - name: Install Dependencies, ARM64 Toolchain, QEMU, dan BusyBox Tools
         run: |
           sudo apt-get update
-          # Dependensi standar kernel build
           sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl
-          # Tambahan: Toolchain untuk cross-compile ke AArch64 (ARM64)
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      # 3. Setup ccache
-      - name: Setup ccache
+            build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            qemu-system-aarch64 cpio libncurses5-dev
+          
+      # 3. Setup ccache Path & Directory Fix
+      - name: Setup ccache PATH & Directory Fix
         run: |
-          # Buat foldernya secara manual biar Actions gak komplain pas cleanup
+          # Perbaikan: Pastikan folder cache ada sebelum di-restore/save
           mkdir -p /home/runner/.cache/ccache
           echo "CCACHE_DIR=/home/runner/.cache/ccache" >> $GITHUB_ENV
           echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
-      # 4. Restore ccache (Key diperbaiki biar lebih akurat)
+      # 4. Restore ccache Cache
       - name: Restore ccache Cache
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
-          # Key cache berdasarkan ARCH dan config file (lebih spesifik)
+          # Key cache spesifik ke ARCH dan config
           key: kernel-ccache-${{ env.ARCH }}-${{ hashFiles('linux-src/.config') }}-${{ github.sha }}
           restore-keys: |
             kernel-ccache-${{ env.ARCH }}-
@@ -57,40 +55,36 @@ jobs:
           git clone --depth=1 --branch linux-6.6.y \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
 
-      # 7. Apply custom kernel-config atau defconfig
+      # 7. Apply custom kernel-config atau defconfig (FIXED)
       - name: Apply Custom Kernel Config
         working-directory: linux-src
         run: |
           if [ -f ../kernel-config ]; then
             echo "[*] Using custom kernel-config"
             cp ../kernel-config .config
-            # oldconfig buat adopsi .config baru dengan defconfig sisa
-            yes "" | make ${ARCH}_defconfig oldconfig 
+            # oldconfig buat adopsi .config baru
+            yes "" | make defconfig oldconfig 
           else
             echo "[*] No custom kernel-config found. Using default config for ${ARCH}."
-            # Set default config untuk ARM64
+            # Perbaikan: Gunakan 'make defconfig' untuk ARM64
             make defconfig
           fi
 
-      # 8. Inline config tweaks (Disarankan cek lagi nilai HZ untuk baterai)
+      # 8. Inline config tweaks
       - name: Inline Config Tweaks
         working-directory: linux-src
         run: |
           scripts/config --enable CONFIG_BPF
-          # Ganti HZ ke 250 (Bagus buat trade-off Baterai/Responsif)
           scripts/config --set-val CONFIG_HZ 250 
-          # Enable fitur wajib: OverlayFS (buat Termux/Linux modern)
           scripts/config --enable CONFIG_OVERLAY_FS
-          # Konfig lain yang mungkin perlu diaktifkan di sini
           make olddefconfig
 
-      # 9. SIGNING MODE — generate x509 key and inject (Opsional, hapus kalau gak perlu)
+      # 9. SIGNING MODE (Opsional)
       - name: Generate Signing Keys
         working-directory: linux-src
         run: |
           mkdir -p certs
-          openssl req -new -nodes -utf8 -sha256 \
-            -subj "/CN=KernelAutoKey/" \
+          openssl req -new -nodes -utf8 -sha256 -subj "/CN=KernelAutoKey/" \
             -newkey rsa:2048 -keyout certs/signing_key.pem \
             -x509 -out certs/signing_key.x509.pem -days 3650
           scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS "certs/signing_key.x509.pem"
@@ -104,7 +98,6 @@ jobs:
           if [ -d ../patches ]; then
             for p in ../patches/*.patch; do
               echo "patch: $p"
-              # Gunakan git am kalau patch berformat commit atau git apply
               git apply "$p"
             done
           else
@@ -127,52 +120,48 @@ jobs:
       - name: Build Kernel (Target Image.gz untuk ARM64)
         working-directory: linux-src
         run: |
-          make -j$(nproc) Image.gz modules
+          # Gunakan ccache di depan CROSS_COMPILE
+          make -j$(nproc) CROSS_COMPILE="ccache aarch64-linux-gnu-" Image.gz modules 
 
-      # 14. 🛠️ Instalasi QEMU dan Dependensi Initramfs
-      - name: Install QEMU and Initramfs Tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-aarch64 cpio build-essential libncurses5-dev
-          
-      # 15. 📦 Cross-Compile BusyBox (ARM64 Statis)
+      # 14. 📦 Cross-Compile BusyBox (ARM64 Statis) - FIX DOWNLOAD & LINKER
       - name: Cross-Compile BusyBox for ARM64
         run: |
-          # ... (Download dan extract source code) ...
+          # 1. Download Source Code BusyBox
+          wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+          # 2. Extract Source Code
+          tar -xf busybox-1.36.1.tar.bz2
+          
           cd busybox-1.36.1
           
-          # Konfigurasi: Default config, pastikan static build
+          # Konfigurasi: Default config, paksa static build
           make defconfig
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           
-          # Tambahkan -static ke LDFLAGS dan pastikan toolchain path sudah benar
+          # FIX Linker Error: Paksa Static Linkage
           export LDFLAGS='-static'
           
           # Build BusyBox menggunakan Cross-Compile Toolchain
-          # NOTE: Kita harus memastikan PATH toolchain (aarch64-linux-gnu-) sudah di-set
           make ARCH=arm64 CROSS_COMPILE=${{ env.CROSS_COMPILE }} -j$(nproc)
           
-          # Simpan binary statis yang sudah jadi
+          # Simpan binary statis ARM64 yang sudah jadi
           cp busybox ../busybox-arm64
           cd ..
           
-      # 16. 📁 Buat Initramfs dengan Binary ARM64
+      # 15. 📁 Buat Initramfs dengan Binary ARM64
       - name: Create Minimal BusyBox Initramfs
         run: |
           mkdir -p initramfs/bin initramfs/dev initramfs/etc initramfs/lib initramfs/proc initramfs/sys initramfs/tmp
           
-          # SALIN BINARY ARM64 YANG BARU DIBUAT
+          # Salin Binary ARM64 yang sudah di-compile
           cp busybox-arm64 initramfs/bin/busybox
-          
-          # Buat symlink sh ke busybox
           ln -s /bin/busybox initramfs/bin/sh
 
-          # Buat init script (dengan shebang /bin/sh)
+          # Buat init script
           echo "#!/bin/sh" > initramfs/init
           echo "mount -t proc none /proc" >> initramfs/init
           echo "mount -t sysfs none /sys" >> initramfs/init
           echo "echo '*** Custom Kernel Boot Success! Entering Shell ***'" >> initramfs/init
-          echo "/bin/sh" >> initramfs/init # Jalankan shell melalui symlink sh
+          echo "/bin/sh" >> initramfs/init
           chmod +x initramfs/init
           
           # Buat device nodes kritis
@@ -185,6 +174,51 @@ jobs:
               | cpio --null -o --format=newc > ../initrd.img
           cd ..
 
-      # 17. 🚀 QEMU TEST (Penomoran langkah disesuaikan)
-      
-      
+      # 16. 🚀 QEMU TEST: Booting Penuh ke Shell
+      - name: Run QEMU Test (Full Boot to Shell)
+        working-directory: linux-src
+        run: |
+          cp arch/arm64/boot/Image.gz .
+          cp ../initrd.img .
+          
+          echo "[*] Starting QEMU Boot Test..."
+          
+          # Timeout 60s untuk mencegah hang
+          timeout 60s qemu-system-aarch64 \
+              -M virt \
+              -cpu cortex-a57 \
+              -m 512M \
+              -kernel Image.gz \
+              -initrd initrd.img \
+              -nographic \
+              -append "console=ttyAMA0 root=/dev/ram0 rw earlyprintk"
+          
+          echo "[*] QEMU Test Complete. Check logs above for BusyBox shell success message."
+
+      # 17. Measure build duration
+      - name: Calculate Build Duration
+        run: |
+          end=$(date +%s)
+          duration=$((end - time_start))
+          echo "Build duration: $duration seconds"
+          echo "## Build Duration: $duration seconds" >> $GITHUB_STEP_SUMMARY
+
+      # 18. Upload logs
+      - name: Upload Build Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: linux-src/*.log
+          if-no-files-found: ignore
+
+      # 19. Upload built kernel image + signing keys + initrd
+      - name: Upload Final Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-arm64-bootable
+          path: |
+            linux-src/arch/arm64/boot/Image.gz
+            linux-src/System.map
+            initrd.img # Ramdisk yang sukses boot
+            linux-src/certs/signing_key.pem
+            linux-src/certs/signing_key.x509.pem
