@@ -19,160 +19,178 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            build-essential bc bison flex libssl-dev libelf-dev dwarves \
-            ccache qemu-system-arm qemu-efi-aarch64
-
-      # 3. Setup ccache
+      # 2. Setup ccache
       - name: Setup ccache
         run: |
-          echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+          ccache --set-config=cache_dir=${CCACHE_DIR}
+          ccache --clear
 
-      # 4. Restore ccache
+      # 3. Restore ccache cache
       - name: Restore ccache cache
         uses: actions/cache@v4
         with:
-          path: /home/runner/.cache/ccache
+          path: ${{ env.CCACHE_DIR }}
           key: kernel-ccache-${{ github.sha }}
           restore-keys: |
             kernel-ccache-
 
-      # 5. Initial ccache state
-      - name: Show ccache stats
-        run: ccache -s
-
-      # 6. Clone Android Common Kernel GKI 5.10
-      - name: Clone Android Common Kernel GKI 5.10
+      # 4. Install dependencies
+      - name: Install dependencies
         run: |
-          echo "[*] Cloning ACK GKI 5.10"
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            git \
+            make \
+            python3 \
+            rsync \
+            kmod \
+            cpio
+
+      # 5. Clone Android Common Kernel GKI 5.10
+      - name: Clone Android Common Kernel
+        run: |
+          echo "[*] Cloning ACK GKI 5.10..."
+          rm -rf linux-src
           git clone --depth=1 --branch android12-5.10 \
             https://android.googlesource.com/kernel/common linux-src
 
-      # 7. Apply base defconfig (GKI)
-      - name: Apply GKI defconfig
+      # 6. Initial ccache stats
+      - name: Show ccache stats before build
+        run: ccache -s
+
+      # 7. Configure kernel
+      - name: Configure kernel
         working-directory: linux-src
         run: |
-          make defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 
-      # 8. Disable broken certificate enforcement
-      - name: Disable kernel certificate chain
-        working-directory: linux-src
-        run: |
-          scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYS
-          scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
-          scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
-          scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
-          make olddefconfig
+          # Disable key enforcement
+          ./scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYS
+          ./scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
+          ./scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+          ./scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
 
-      # 9. Inline Tweaks (Opsional)
-      - name: Inline tweaks
-        working-directory: linux-src
-        run: |
-          scripts/config --enable CONFIG_BPF
-          scripts/config --set-val CONFIG_HZ 1000
-          make olddefconfig
+          # Ensure Image.gz is produced
+          ./scripts/config --enable CONFIG_KERNEL_GZIP
 
-      # 10. Start time
-      - name: Start time
-        id: start
+          # Common performance tweaks
+          ./scripts/config --enable CONFIG_BPF
+          ./scripts/config --set-val CONFIG_HZ 1000
+
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+      # 8. Start build timer
+      - name: Start build timer
         run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-      # 11. Build Kernel Image + Modules
-      - name: Build kernel & modules
+      # 9. Build Kernel
+      - name: Build kernel image
         working-directory: linux-src
         run: |
-          make -j$(nproc) Image.gz modules
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache aarch64-linux-gnu-gcc" \
+            -j$(nproc) Image.gz
 
-      # 12. Clone / Validate AnyKernel3
-      - name: Prepare AnyKernel3 (Auto-Healing)
-        run: |
-          echo "[*] Validating AnyKernel3 directory..."
-
-          # If AnyKernel3 exists but NOT a directory → remove it
-          if [ -e AnyKernel3 ] && [ ! -d AnyKernel3 ]; then
-            echo "[!] AnyKernel3 corrupted (file, not folder). Removing..."
-            rm -f AnyKernel3
+          if [ ! -f "arch/arm64/boot/Image.gz" ]; then
+            echo "Image.gz not found! Build failed."
+            exit 1
           fi
 
-          # Clone if missing
-          if [ ! -d AnyKernel3 ]; then
-            echo "[*] Cloning fresh AnyKernel3..."
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          else
-            echo "[*] AnyKernel3 already exists. Cleaning leftover files..."
-            rm -rf AnyKernel3/ramdisk AnyKernel3/zImage AnyKernel3/*.zip
-          fi
-
-          # Clean modules / dtb / dtbo folders
-          mkdir -p AnyKernel3/modules/system/lib/modules
-          mkdir -p AnyKernel3/dtb
-          mkdir -p AnyKernel3/dtbo
-
-          echo "[*] AnyKernel3 ready."
-
-      # 13. Inject Kernel Image + Modules
-      - name: Move Kernel, DTB and Modules (Safe Mode)
+      # 10. Build modules
+      - name: Build kernel modules
+        working-directory: linux-src
         run: |
-          echo "[*] Injecting Image.gz..."
-          cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache aarch64-linux-gnu-gcc" \
+            -j$(nproc) modules
 
-          echo "[*] Injecting modules *.ko only..."
-          mkdir -p AnyKernel3/modules/system/lib/modules
-          find out-modules -type f -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
+          mkdir -p ../modules
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            INSTALL_MOD_PATH=../modules modules_install
 
-          # remove symlink loops
-          find AnyKernel3/modules -type l -delete
+      # 11. Final ccache stats
+      - name: Show ccache stats after build
+        run: ccache -s
 
-          echo "[*] Modules injected."
-
-      # 14. Build Flashable ZIP
-      - name: Create Final Flashable ZIP
+      # 12. Prepare AnyKernel3
+      - name: Prepare AnyKernel3
         run: |
-          echo "[*] Generating flashable ZIP..."
+          rm -rf AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 
-          # Append kernel version to anykernel.sh
-          echo "kernel.string=MyCustomKernel-$(date +%Y%m%d)" >> AnyKernel3/anykernel.sh
+          rm -rf AnyKernel3/modules
+          mkdir -p AnyKernel3/modules
 
-          cd AnyKernel3
-          zip -r9 ../MyCustomKernel-ARM64-$(date +%Y%m%d).zip ./*
-          cd ..
-
-          echo "[*] ZIP created successfully."
-
-      # 15. Upload Final Artifact
-      - name: Upload Final Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-arm64-distribution
-          path: |
-            MyCustomKernel-ARM64-*.zip
-            linux-src/arch/arm64/boot/Image.gz
-
-      # 16. Move kernel + modules into AK3
-      - name: Inject Kernel Files
+      # 13. Copy kernel files to AnyKernel3
+      - name: Copy kernel files
         run: |
           cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/
-          cp -r linux-src/out-modules/lib AnyKernel3/modules/
 
-      # 17. Create Flashable ZIP
-      - name: Create Flashable ZIP
+          if find modules -name "*.ko" | grep -q .; then
+            mkdir -p AnyKernel3/modules/system/lib
+            cp -r modules/lib/modules AnyKernel3/modules/system/lib/
+            find AnyKernel3/modules -type l ! -exec test -e {} \; -delete
+          fi
+
+          ls -la AnyKernel3/
+          find AnyKernel3/modules -name "*.ko" | head -5
+
+      # 14. Create flashable ZIP
+      - name: Create flashable ZIP
         run: |
-          cd AnyKernel3
-          echo "kernel.string=GKI-5.10-$(date +%Y%m%d)" >> anykernel.sh
-          zip -r9 ../Kernel-GKI-5.10-$(date +%Y%m%d).zip ./*
-          cd ..
+          KERNEL_VERSION=$(grep -Po 'CONFIG_LOCALVERSION="\K[^"]*' linux-src/.config || echo "custom")
+          DATE=$(date +%Y%m%d)
 
-      # 18. Upload artifacts
-      - name: Upload Flashable ZIP + Kernel Image
+          echo "kernel.string=Kernel Playground - $KERNEL_VERSION - $DATE" >> AnyKernel3/anykernel.sh
+          echo "build.date=$(date)" >> AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../Kernel-Playground-ARM64-$DATE.zip ./* -x "*.git*"
+
+      # 15. End build timer and calculate duration
+      - name: Calculate build time
+        run: |
+          end=$(date +%s)
+          start=${{ env.time_start }}
+          dur=$((end - start))
+          echo "BUILD_TIME=$dur" >> $GITHUB_ENV
+          echo "Build completed in $dur seconds"
+
+      # 16. Upload artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-output
+          name: kernel-build-${{ github.run_number }}
           path: |
-            Kernel-GKI-5.10-*.zip
+            Kernel-Playground-ARM64-*.zip
             linux-src/arch/arm64/boot/Image.gz
-            linux-src/out-modules
+            modules/lib/modules/
+          retention-days: 7
+
+      # 17. Upload build info
+      - name: Upload build info
+        if: always()
+        run: |
+          {
+            echo "Build Information:"
+            echo "=================="
+            echo "Workflow: ${{ github.workflow }}"
+            echo "Run ID: ${{ github.run_id }}"
+            echo "Commit: ${{ github.sha }}"
+            echo "Build Time: ${{ env.BUILD_TIME }} seconds"
+            echo "Date: $(date)"
+            echo ""
+            echo "Kernel Configuration:"
+            grep "^CONFIG_LOCALVERSION=" linux-src/.config || true
+          } > build-info.txt
