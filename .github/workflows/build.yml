@@ -95,19 +95,38 @@ jobs:
           ls -R linux-src/arch/arm64/boot || true
           ls -R linux-src || true
 
-      # 13. Build duration
-      - name: Build duration
+      # 13. Clean & Install Modules (ANTI-RECURSIVE MODE)
+      - name: Install Clean Kernel Modules
         run: |
-          end=$(date +%s)
-          duration=$((end - time_start))
-          echo "Kernel Build Duration: $duration seconds"
-
-      # 14. Install modules to temp dir
-      - name: Install modules
-        working-directory: linux-src
-        run: |
+          # Buat folder staging modules
+          rm -rf out-modules
           mkdir -p out-modules
-          make INSTALL_MOD_PATH=out-modules modules_install
+
+          # Install modules tanpa symlink build/source
+          make -C linux-src modules_install INSTALL_MOD_PATH=../out-modules
+
+          # Hapus symlink racun (build, source, dll)
+          find out-modules -type l -delete
+
+          # Bersihkan folder kosong setelah symlink dibuang
+          find out-modules -type d -empty -delete
+
+      # 14. Inject Kernel Image, DTB, and Clean Modules into AnyKernel3
+      - name: Inject Kernel + DTB + Modules
+        run: |
+          # Salin Image.gz
+          cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/
+
+          # TEMPLATE DTB / DTBO (isi sesuai device lo)
+          # cp linux-src/arch/arm64/boot/dts/vendor/YOUR-DTB.img AnyKernel3/dtb
+          # cp linux-src/arch/arm64/boot/dts/vendor/YOUR-DTBO.img AnyKernel3/dtbo
+
+          # Copy hanya .ko bersih
+          mkdir -p AnyKernel3/modules/system/lib/modules
+          find out-modules -type f -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
+
+          # Pastikan tidak ada symlink liar masuk AK3
+          find AnyKernel3/modules -type l -delete
 
       # 15. Clone AnyKernel3
       - name: Clone AnyKernel3
