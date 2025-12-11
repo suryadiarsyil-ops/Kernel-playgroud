@@ -1,229 +1,139 @@
-name: FINAL - Kernel ARM64 Build & QEMU Test
+name: Kernel Playground Build
+
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
 
-env:
-  ARCH: arm64
-  CROSS_COMPILE_PREFIX: aarch64-linux-gnu-
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
+    env:
+      ARCH: arm64
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CROSS_COMPILE: aarch64-linux-gnu-
+
     steps:
       # 1. Checkout repo
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Setup Linaro Toolchain
-      - name: Setup Linaro ARM64 Toolchain and Dependencies
+      # 2. Install dependencies
+      - name: Install deps
         run: |
-          echo "[*] Installing Linaro Toolchain for stable static linking..."
-          wget -q https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
-          tar xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
-          
-          TOOLCHAIN_PATH=$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin
-          echo "$TOOLCHAIN_PATH" >> $GITHUB_PATH
-          # Set variable lingkungan untuk langkah selanjutnya
-          echo "CROSS_COMPILE=$TOOLCHAIN_PATH/$CROSS_COMPILE_PREFIX" >> $GITHUB_ENV 
-          
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves ccache openssl \
-            qemu-system-aarch64 cpio libncurses5-dev 
-          
-      # 3. Setup ccache Path
-      - name: Setup ccache PATH & Directory Fix
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            build-essential bc bison flex libssl-dev libelf-dev dwarves \
+            ccache qemu-system-arm qemu-efi-aarch64
+
+      # 3. Setup ccache
+      - name: Setup ccache
         run: |
-          mkdir -p /home/runner/.cache/ccache
-          echo "CCACHE_DIR=/home/runner/.cache/ccache" >> $GITHUB_ENV
           echo 'export PATH="/usr/lib/ccache:$PATH"' >> $GITHUB_ENV
 
-      # 4. Restore ccache Cache
-      - name: Restore ccache Cache
+      # 4. Restore ccache
+      - name: Restore ccache cache
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/ccache
-          key: kernel-ccache-${{ env.ARCH }}-${{ hashFiles('linux-src/.config') }}-${{ github.sha }}
+          key: kernel-ccache-${{ github.sha }}
           restore-keys: |
-            kernel-ccache-${{ env.ARCH }}-
+            kernel-ccache-
 
-      # 5. Clone kernel (Kembali ke common repo, pakai branch LTS)
-      - name: Auto-detect valid 5.10 branch
+      # 5. Initial ccache state
+      - name: Show ccache stats
+        run: ccache -s
+
+      # 6. Clone Android Common Kernel GKI 5.10
+      - name: Clone Android Common Kernel GKI 5.10
         run: |
-          echo "[*] Fetching branches..."
-          git ls-remote --heads https://android.googlesource.com/kernel/common | grep 5.10
-
-          BRANCH=$(git ls-remote --heads https://android.googlesource.com/kernel/common \
-            | grep 5.10 \
-            | grep -E 'lts|14|13' \
-            | head -n1 \
-            | awk '{print $2}' \
-            | sed 's/refs\/heads\///')
-
-          echo "[*] Selected branch: $BRANCH"
-
-          git clone --depth=1 --branch $BRANCH \
+          echo "[*] Cloning ACK GKI 5.10"
+          git clone --depth=1 --branch android12-5.10 \
             https://android.googlesource.com/kernel/common linux-src
 
-      # 6. Apply defconfig (REVISI: Menggunakan config GKI/ACK)
-      - name: Apply GKI/ACK Default Config
+      # 7. Apply base defconfig (GKI)
+      - name: Apply GKI defconfig
         working-directory: linux-src
         run: |
-          # Gunakan defconfig GKI (Generic Kernel Image) yang stabil
-          make gki_defconfig
+          make defconfig
 
-      # 7. Inline Config Tweaks (REVISI: Optimasi Kinerja dan Debugging)
-      - name: Inject Custom Performance Tweaks & Debugging
+      # 8. Disable broken certificate enforcement
+      - name: Disable kernel certificate chain
         working-directory: linux-src
         run: |
-          echo "[*] Injecting Performance Tweaks (Scheduler, I/O, Debug)"
-
-          # --- 1. SCHEDULER & GOVERNOR OPTIMASI (Wajib) ---
-          scripts/config --disable CONFIG_SCHED_SMT
-          scripts/config --enable CONFIG_SCHED_AUTOGROUP
-          
-          # Aktifkan Schedulers Alternatif
-          scripts/config --enable CONFIG_CFS_BANDWIDTH
-          scripts/config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL # Governor modern
-          scripts/config --enable CONFIG_CGROUPS
-          
-          # --- 2. I/O SCHEDULER (Mengganti CFQ/Deadline) ---
-          # Aktifkan BFQ (Terbaik untuk I/O di Mobile)
-          scripts/config --enable CONFIG_BLK_DEV_BFQ 
-          scripts/config --set-val CONFIG_DEFAULT_IOSCHED "bfq"
-          
-          # --- 3. DEBUGGING & TRACING LANJUTAN (Wajib untuk Modding) ---
-          # pstore/LAST_KMSG (Simpan log kernel setelah crash)
-          scripts/config --enable CONFIG_PSTORE 
-          scripts/config --enable CONFIG_PSTORE_RAM 
-          # KEXEC (Soft Reboot / Crash Dump)
-          scripts/config --enable CONFIG_KEXEC
-          scripts/config --enable CONFIG_KEXEC_CORE
-          
-          # Optimasi: Compress LZO (Cepat tapi kurang efisien)
-          scripts/config --enable CONFIG_RD_LZMA
-          
+          scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYS
+          scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
+          scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+          scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
           make olddefconfig
 
-      # 8. Build kernel Image + Modules
-      - name: Build Kernel (Target Image.gz untuk ARM64)
+      # 9. Inline Tweaks (Opsional)
+      - name: Inline tweaks
         working-directory: linux-src
         run: |
-          # Menggunakan variable bash CROSS_COMPILE secara langsung
-          make -j$(nproc) CROSS_COMPILE="ccache $CROSS_COMPILE" Image.gz modules 
+          scripts/config --enable CONFIG_BPF
+          scripts/config --set-val CONFIG_HZ 1000
+          make olddefconfig
 
-      # 9. Cross-Compile BusyBox (ARM64 Statis)
-      - name: Cross-Compile BusyBox for ARM64
-        run: |
-          wget https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          tar -xf busybox-1.36.1.tar.bz2
-          
-          cd busybox-1.36.1
-          
-          make defconfig
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          
-          export LDFLAGS='-static'
-          
-          # Menggunakan variable bash CROSS_COMPILE secara langsung
-          make ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE -j$(nproc)
-          
-          cp busybox ../busybox-arm64
-          cd ..
-          
-      # 10. Buat Initramfs dengan Binary ARM64
-      - name: Create Minimal BusyBox Initramfs
-        run: |
-          mkdir -p initramfs/bin initramfs/dev initramfs/etc initramfs/lib initramfs/proc initramfs/sys initramfs/tmp
-          
-          cp busybox-arm64 initramfs/bin/busybox
-          ln -s /bin/busybox initramfs/bin/sh
+      # 10. Start time
+      - name: Start time
+        id: start
+        run: echo "time_start=$(date +%s)" >> $GITHUB_ENV
 
-          echo "#!/bin/sh" > initramfs/init
-          echo "mount -t proc none /proc" >> initramfs/init
-          echo "mount -t sysfs none /sys" >> initramfs/init
-          echo "echo '*** BOOT SUCCESS: Custom Shell Active ***'" >> initramfs/init
-          echo "/bin/sh" >> initramfs/init
-          chmod +x initramfs/init
-          
-          sudo mknod initramfs/dev/console c 5 1
-          sudo mknod initramfs/dev/null c 1 3
-          
-          cd initramfs
-          find . -print0 \
-              | cpio --null -o --format=newc > ../initrd.img
-          cd ..
-
-      # 11. Run QEMU Test
-      - name: Run QEMU Test (Validate Boot)
+      # 11. Build Kernel Image + Modules
+      - name: Build kernel & modules
         working-directory: linux-src
         run: |
-          cp arch/arm64/boot/Image.gz .
-          cp ../initrd.img .
-          
-          echo "[*] Starting QEMU Test..."
-          
-          timeout 60s qemu-system-aarch64 \
-              -M virt \
-              -cpu cortex-a57 \
-              -m 512M \
-              -kernel Image.gz \
-              -initrd initrd.img \
-              -nographic \
-              -append "console=ttyAMA0 root=/dev/ram0 rw earlyprintk"
-          
-          echo "[*] QEMU Test Complete. Search log for BOOT SUCCESS."
+          make -j$(nproc) Image.gz modules
 
-      # 12. Clone AnyKernel3 for Packaging
-      - name: Clone AnyKernel3 and Prepare Directory
+      # 12. Debug file existence
+      - name: Verify output
         run: |
-          # Ambil repo AnyKernel3 (Versi yang stabil dan sering dipakai)
+          echo "[*] Checking output..."
+          ls -R linux-src/arch/arm64/boot || true
+          ls -R linux-src || true
+
+      # 13. Build duration
+      - name: Build duration
+        run: |
+          end=$(date +%s)
+          duration=$((end - time_start))
+          echo "Kernel Build Duration: $duration seconds"
+
+      # 14. Install modules to temp dir
+      - name: Install modules
+        working-directory: linux-src
+        run: |
+          mkdir -p out-modules
+          make INSTALL_MOD_PATH=out-modules modules_install
+
+      # 15. Clone AnyKernel3
+      - name: Clone AnyKernel3
+        run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          
-          # Bersihkan file config/script yang tidak perlu dari AnyKernel3 (Optional)
-          rm -rf AnyKernel3/ramdisk AnyKernel3/zImage AnyKernel3/*.zip
 
-      # 13. Inject Kernel Image, DTB, and Modules into AnyKernel3 (REVISI)
-      - name: Move Kernel, DTB and Modules
+      # 16. Move kernel + modules into AK3
+      - name: Inject Kernel Files
         run: |
-          # Salin Image.gz
           cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/
-          
-          # ### TEMPLATE KRITIS DTB/DTBO ###
-          # CATATAN: Path di bawah ini HANYA CONTOH.
-          # Lo harus ganti "device-dtb.img" dengan DTB spesifik device lo.
-          
-          # Jika device menggunakan DTB terpisah:
-          # cp linux-src/arch/arm64/boot/dts/vendor/device-dtb.img AnyKernel3/dtb
-          
-          # Jika device menggunakan DTBO (Overlay):
-          # cp linux-src/arch/arm64/boot/dts/vendor/device-dtbo.img AnyKernel3/dtbo
-          
-          # Salin Modules
-          find linux-src -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
-          
-          rm -f initrd.img
-          
-      # 14. Create Final Flashable ZIP
-      - name: Create Final Flashable ZIP
+          cp -r linux-src/out-modules/lib AnyKernel3/modules/
+
+      # 17. Create Flashable ZIP
+      - name: Create Flashable ZIP
         run: |
-          # Tambahkan script versi dan info build
-          echo "kernel.string=MyCustomKernel-$(date +%Y%m%d)" >> AnyKernel3/anykernel.sh
-          
-          # Pindah ke direktori AK3 untuk compress
           cd AnyKernel3
-          
-          # Kompres seluruh folder menjadi ZIP (Nama file ZIP harus unik)
-          zip -r9 ../MyCustomKernel-ARM64-$(date +%Y%m%d).zip ./*
+          echo "kernel.string=GKI-5.10-$(date +%Y%m%d)" >> anykernel.sh
+          zip -r9 ../Kernel-GKI-5.10-$(date +%Y%m%d).zip ./*
           cd ..
-          
-      # 15. Upload Final Artifact (Tambahkan ZIP)
-      - name: Upload Final Artifacts
+
+      # 18. Upload artifacts
+      - name: Upload Flashable ZIP + Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-arm64-distribution
+          name: kernel-output
           path: |
-            MyCustomKernel-ARM64-*.zip  # Upload file ZIP flashable
-            linux-src/arch/arm64/boot/Image.gz  
+            Kernel-GKI-5.10-*.zip
+            linux-src/arch/arm64/boot/Image.gz
+            linux-src/out-modules
