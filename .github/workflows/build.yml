@@ -88,50 +88,70 @@ jobs:
         run: |
           make -j$(nproc) Image.gz modules
 
-      # 12. Debug file existence
-      - name: Verify output
+      # 12. Clone / Validate AnyKernel3
+      - name: Prepare AnyKernel3 (Auto-Healing)
         run: |
-          echo "[*] Checking output..."
-          ls -R linux-src/arch/arm64/boot || true
-          ls -R linux-src || true
+          echo "[*] Validating AnyKernel3 directory..."
 
-      # 13. Clean & Install Modules (ANTI-RECURSIVE MODE)
-      - name: Install Clean Kernel Modules
+          # If AnyKernel3 exists but NOT a directory → remove it
+          if [ -e AnyKernel3 ] && [ ! -d AnyKernel3 ]; then
+            echo "[!] AnyKernel3 corrupted (file, not folder). Removing..."
+            rm -f AnyKernel3
+          fi
+
+          # Clone if missing
+          if [ ! -d AnyKernel3 ]; then
+            echo "[*] Cloning fresh AnyKernel3..."
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          else
+            echo "[*] AnyKernel3 already exists. Cleaning leftover files..."
+            rm -rf AnyKernel3/ramdisk AnyKernel3/zImage AnyKernel3/*.zip
+          fi
+
+          # Clean modules / dtb / dtbo folders
+          mkdir -p AnyKernel3/modules/system/lib/modules
+          mkdir -p AnyKernel3/dtb
+          mkdir -p AnyKernel3/dtbo
+
+          echo "[*] AnyKernel3 ready."
+
+      # 13. Inject Kernel Image + Modules
+      - name: Move Kernel, DTB and Modules (Safe Mode)
         run: |
-          # Buat folder staging modules
-          rm -rf out-modules
-          mkdir -p out-modules
+          echo "[*] Injecting Image.gz..."
+          cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
 
-          # Install modules tanpa symlink build/source
-          make -C linux-src modules_install INSTALL_MOD_PATH=../out-modules
-
-          # Hapus symlink racun (build, source, dll)
-          find out-modules -type l -delete
-
-          # Bersihkan folder kosong setelah symlink dibuang
-          find out-modules -type d -empty -delete
-
-      # 14. Inject Kernel Image, DTB, and Clean Modules into AnyKernel3
-      - name: Inject Kernel + DTB + Modules
-        run: |
-          # Salin Image.gz
-          cp linux-src/arch/arm64/boot/Image.gz AnyKernel3/
-
-          # TEMPLATE DTB / DTBO (isi sesuai device lo)
-          # cp linux-src/arch/arm64/boot/dts/vendor/YOUR-DTB.img AnyKernel3/dtb
-          # cp linux-src/arch/arm64/boot/dts/vendor/YOUR-DTBO.img AnyKernel3/dtbo
-
-          # Copy hanya .ko bersih
+          echo "[*] Injecting modules *.ko only..."
           mkdir -p AnyKernel3/modules/system/lib/modules
           find out-modules -type f -name "*.ko" -exec cp {} AnyKernel3/modules/system/lib/modules/ \;
 
-          # Pastikan tidak ada symlink liar masuk AK3
+          # remove symlink loops
           find AnyKernel3/modules -type l -delete
 
-      # 15. Clone AnyKernel3
-      - name: Clone AnyKernel3
+          echo "[*] Modules injected."
+
+      # 14. Build Flashable ZIP
+      - name: Create Final Flashable ZIP
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          echo "[*] Generating flashable ZIP..."
+
+          # Append kernel version to anykernel.sh
+          echo "kernel.string=MyCustomKernel-$(date +%Y%m%d)" >> AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../MyCustomKernel-ARM64-$(date +%Y%m%d).zip ./*
+          cd ..
+
+          echo "[*] ZIP created successfully."
+
+      # 15. Upload Final Artifact
+      - name: Upload Final Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-arm64-distribution
+          path: |
+            MyCustomKernel-ARM64-*.zip
+            linux-src/arch/arm64/boot/Image.gz
 
       # 16. Move kernel + modules into AK3
       - name: Inject Kernel Files
